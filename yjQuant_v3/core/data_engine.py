@@ -41,7 +41,10 @@ class DataEngine:
         
         # 数据请求配置
         self.data_engine_config = {}
-        
+
+        # 数据请求任务配置
+        self.data_request_config = {}
+
         logger.info("数据引擎初始化完成")
 
     # 对外开放
@@ -56,6 +59,7 @@ class DataEngine:
 
         # 获取数据引擎配置
         self.data_engine_config = self.config_manager.get_config("data_engine")
+        self.data_request_config = self.data_engine_config.get("data_request")
 
         # 初始化子管理器
         await self._initialize_managers()
@@ -65,8 +69,7 @@ class DataEngine:
         self._event_engine.subscribe("data_engine_config_changed", self._handle_config_change)
         
         # 从配置获取数据请求频率
-        data_request_config = self.data_engine_config.get("data_request", {})
-        interval = data_request_config.get("interval", 60)  # 默认1分钟
+        interval = self.data_request_config.get("interval", 3600)  # 默认1h
         
         # 向时钟引擎注册数据请求任务
         self._data_request_task_id = self._clock_engine.register_task(
@@ -107,10 +110,10 @@ class DataEngine:
     async def _initialize_managers(self) -> None:
         """初始化子管理器"""
         try:
-            # 初始化Redis管理器
-            from yjQuant_v3.core.data_manager.redis_manager import RedisManager
-            self._redis_manager = RedisManager(self.data_engine_config.get("redis", {}))
-            await self._redis_manager.start()
+            # # 初始化Redis管理器
+            # from yjQuant_v3.core.data_manager.redis_manager import RedisManager
+            # self._redis_manager = RedisManager(self.data_engine_config.get("redis", {}))
+            # await self._redis_manager.start()
 
             # 初始化数据源管理器
             from yjQuant_v3.core.data_manager.data_source_manager import DataSourceManager
@@ -121,7 +124,7 @@ class DataEngine:
             from yjQuant_v3.core.data_manager.pg_manager import PgManager
             self._db_manager = PgManager(self.data_engine_config.get("postgresql", {}))
             await self._db_manager.start()
-            
+
             logger.info("子管理器初始化完成")
             
         except Exception as e:
@@ -132,9 +135,10 @@ class DataEngine:
     async def _stop_managers(self) -> None:
         """停止子管理器"""
         try:
-            if self._redis_manager:
-                await self._redis_manager.stop()
-            
+            # if self._redis_manager:
+            #     await self._redis_manager.stop()
+
+            # data_source_manager没有stop
             # if self._data_source_manager:
             #     await self._data_source_manager.stop()
             
@@ -176,7 +180,7 @@ class DataEngine:
                 logger.error("数据源管理器未初始化")
                 return
             
-            klines_data = await self._data_source_manager.fetch()
+            klines_data = await self._data_source_manager.fetch(timeframe=self.data_request_config["timeframe"])
             
             if not klines_data:
                 logger.warning("未获取到K线数据")
@@ -184,24 +188,24 @@ class DataEngine:
             
             logger.info(f"成功获取 {len(klines_data)} 条K线数据")
             
-            # 2. 将数据存储到Redis
-            if not self._redis_manager:
-                logger.error("Redis管理器未初始化")
-                return
+            # # 2. 将数据存储到Redis
+            # if not self._redis_manager:
+            #     logger.error("Redis管理器未初始化")
+            #     return
+            #
+            # success = await self._redis_manager.batch_store_klines(
+            #     klines_data,
+            #     # expire_minutes=expire_minutes redis内部有配置，只提供数据，redis读取配置计算过期时间
+            # )
             
-            success = await self._redis_manager.batch_store_klines(
-                klines_data, 
-                # expire_minutes=expire_minutes redis内部有配置，只提供数据，redis读取配置计算过期时间
-            )
-            
-            if success:
-                logger.info("K线数据成功存储到Redis")
-                
-                # 3. 发布数据到达事件
-                await self._publish_data_arrived_event(klines_data)
-                
-            else:
-                logger.error("K线数据存储到Redis失败")
+            # if success:
+            #     logger.info("K线数据成功存储到Redis")
+            #
+            #     # 3. 发布数据到达事件
+            #     await self._publish_data_arrived_event(klines_data)
+            #
+            # else:
+            #     logger.error("K线数据存储到Redis失败")
 
             # 3. 将数据存储到pg数据库
             if not self._db_manager:
@@ -262,11 +266,11 @@ class DataEngine:
 
             # 更新数据源配置
             if "exchanges" in new_config and self._data_source_manager:
-                self._data_source_manager.update_config(new_config["exchanges"])
+                await self._data_source_manager.update_config(new_config["exchanges"])
                 logger.info("数据源配置已更新")
             
             # 更新数据库配置（如果启用）
-            if "database" in new_config and self._db_manager:
+            if "postgresql" in new_config and self._db_manager:
                 await self._db_manager.update_config(new_config["postgresql"])
                 logger.info("数据库配置已更新")
             

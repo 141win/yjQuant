@@ -39,21 +39,33 @@ class ClockTask:
             self.next_run = self._calculate_next_run_time(datetime.now())
     
     def _is_minute_level_task(self) -> bool:
-        """判断是否为分钟级任务（>= 60秒且能被60整除）"""
-        return self.interval >= 60 and self.interval % 60 == 0
+        """判断是否为分钟级任务（>= 60秒且能被60整除，但不是小时级任务）"""
+        return self.interval >= 60 and self.interval % 60 == 0 and not self._is_hour_level_task()
+    
+    def _is_hour_level_task(self) -> bool:
+        """判断是否为小时级任务（>= 3600秒且能被3600整除）"""
+        return self.interval >= 3600 and self.interval % 3600 == 0
     
     def _align_to_minute_boundary(self, target_time: datetime) -> datetime:
         """将时间对齐到分钟整点（秒和微秒归零）"""
         return target_time.replace(second=0, microsecond=0)
     
+    def _align_to_hour_boundary(self, target_time: datetime) -> datetime:
+        """将时间对齐到小时整点（分钟、秒和微秒归零）"""
+        return target_time.replace(minute=0, second=0, microsecond=0)
+    
     def _calculate_next_run_time(self, current_time: datetime) -> datetime:
-        """计算下次执行时间，分钟级任务对齐到整点"""
-        if self._is_minute_level_task():
+        """计算下次执行时间，支持小时级和分钟级任务对齐到整点"""
+        if self._is_hour_level_task():
+            # 小时级任务：对齐到下一个小时整点
+            next_hour = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            return next_hour
+        elif self._is_minute_level_task():
             # 分钟级任务：对齐到下一个分钟整点
             next_minute = current_time.replace(second=0, microsecond=0) + timedelta(minutes=1)
             return next_minute
         else:
-            # 非分钟级任务：保持原有逻辑
+            # 非整点任务：保持原有逻辑
             return current_time + timedelta(seconds=self.interval)
     
     def __lt__(self, other):
@@ -140,6 +152,14 @@ class ClockEngine:
         
         logger.info(f"定时任务注册成功: {name} ({task_id}), 间隔: {interval}秒")
         return task_id
+    
+    def register_hourly_task(self, name: str, event_type: str, event_data: Any = None) -> str:
+        """注册每小时执行的任务 - 在每小时0分0秒执行"""
+        return self.register_task(name, event_type, 3600, event_data)
+    
+    def register_daily_task(self, name: str, event_type: str, event_data: Any = None) -> str:
+        """注册每天执行的任务 - 在每天0时0分0秒执行"""
+        return self.register_task(name, event_type, 86400, event_data)
     
     def unregister_task(self, task_id: str) -> bool:
         """取消定时任务"""

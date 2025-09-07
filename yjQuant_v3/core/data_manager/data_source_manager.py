@@ -4,6 +4,7 @@
 职责:
 - 管理多个数据源连接
 - 实现CCXT接口获取K线数据
+- 支持分钟级和小时级K线数据获取
 - 处理数据源配置变更
 """
 
@@ -17,9 +18,14 @@ logger = logging.getLogger(__name__)
 
 
 class DataSourceManager:
-    """数据源管理器 - 负责从外部数据源获取K线数据"""
     """
+    数据源管理器 - 负责从外部数据源获取K线数据
     
+    功能:
+    - 支持分钟级和小时级K线数据获取 (fetch方法)
+    - 通过timeframe参数指定时间框架 ("1m" 或 "1h")
+    - 并发获取多个交易所数据
+    - 自动重试机制
     """
 
     def __init__(self, config: List[Dict[str, Any]]):
@@ -53,25 +59,55 @@ class DataSourceManager:
         except Exception as e:
             logger.error(f"数据源配置更新失败: {e}")
 
-    # 对外方法：获取配置文件中的列出的所有交易所对应的所有交易对，并返回K线数据列表
-    async def fetch(self):
-        ts = self._get_last_minute_timestamp()
+    # 内部方法：通用的K线数据获取方法
+    async def _fetch_klines_by_timeframe(self, timeframe: str, timestamp_func, data_type: str):
+        """
+        通用的K线数据获取方法
+        
+        Args:
+            timeframe: 时间框架 ("1m" 或 "1h")
+            timestamp_func: 时间戳获取函数
+            data_type: 数据类型描述（用于日志）
+        
+        Returns:
+            List[Tuple[str, str, List]]: [(exchange_id, symbol, kline_data), ...]
+        """
+        ts = timestamp_func()
         # asyncio.gather并发执行多个任务，完成先后顺序可能不固定，但会确保返回结果的顺序与传入的协程顺序一致
         tasks = []
         for exchange_id, config in self.exchanges_config.items():
-            tasks.append(asyncio.create_task(self._fetch_all_klines(exchange_id, config.get("symbols"), '1m', ts)))
-        results = await asyncio.gather(
-            *tasks
-            # self._fetch_all_klines('binance', self.exchanges_config.get("binance").get("symbols"), '1m', ts),
-            # self._fetch_all_klines('gateio', self.exchanges_config.get("binance").get("symbols"), '1m', ts)
-        )
+            tasks.append(asyncio.create_task(self._fetch_all_klines(exchange_id, config.get("symbols"), timeframe, ts)))
+        results = await asyncio.gather(*tasks)
+        
         all_klines = []
         for (exchange_id, config), klines in zip(self.exchanges_config.items(), results):
             for symbol, kline in klines:
                 if kline:
                     all_klines.append((exchange_id, symbol, kline))
-
+        
+        logger.info(f"获取到 {len(all_klines)} 条{data_type}K线数据")
         return all_klines
+    
+    # 对外方法：获取K线数据
+    async def fetch(self, timeframe: str = "1m"):
+        """
+        获取所有交易所的K线数据
+        
+        Args:
+            timeframe: 时间框架，支持 "1m"(分钟级) 或 "1h"(小时级)，默认为 "1m"
+        
+        Returns:
+            List[Tuple[str, str, List]]: [(exchange_id, symbol, kline_data), ...]
+        
+        Raises:
+            ValueError: 当timeframe参数不支持时
+        """
+        if timeframe == "1m":
+            return await self._fetch_klines_by_timeframe("1m", self._get_last_minute_timestamp, "分钟级")
+        elif timeframe == "1h":
+            return await self._fetch_klines_by_timeframe("1h", self._get_last_hour_timestamp, "小时级")
+        else:
+            raise ValueError(f"不支持的时间框架: {timeframe}，支持的时间框架: '1m', '1h'")
 
     # 内部方法：从指定交易所获取指定交易对列表数据
     async def _fetch_all_klines(self, exchange_id: Any, symbols: str, timeframe, since):
@@ -165,4 +201,17 @@ class DataSourceManager:
         now = datetime.now(timezone.utc)
         last_min = now - timedelta(minutes=1)
         ts = int(last_min.replace(second=0, microsecond=0).timestamp() * 1000)
+        return ts
+    
+    # 内部方法：获取当前时间的前一小时时间戳，毫秒单位
+    @staticmethod
+    def _get_last_hour_timestamp():
+        """
+        输入：无
+        输出：上一个完整小时的UTC毫秒时间戳
+        主要逻辑：取当前UTC时间-1小时，并抹去分钟、秒与微秒
+        """
+        now = datetime.now(timezone.utc)
+        last_hour = now - timedelta(hours=1)
+        ts = int(last_hour.replace(minute=0, second=0, microsecond=0).timestamp() * 1000)
         return ts

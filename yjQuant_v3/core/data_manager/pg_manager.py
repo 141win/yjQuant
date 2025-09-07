@@ -34,6 +34,7 @@ class PgManager:
         self.host = config.get("host", "localhost")
         self.port = config.get("port", 5432)
         self.database = config.get("database", "postgres")
+        self.table_name = config.get("table", "_1h")
         self.user = config.get("user", "postgres")
         self.password = config.get("password", "")
         self.min_connections = config.get("min_connections", 1)
@@ -99,7 +100,7 @@ class PgManager:
             logger.error(f"PostgreSQL配置更新失败: {e}")
 
     # 对外开放：提供批量化插入pg数据库
-    async def batch_store_klines(self, klines_data: List[Tuple[str, str, List]], table_name: str = "_1m") -> bool:
+    async def batch_store_klines(self, klines_data: List[Tuple[str, str, List]]) -> bool:
         """
         批量写入K线数据到PostgreSQL数据库
 
@@ -120,13 +121,13 @@ class PgManager:
 
             # 准备批量插入的数据
             rows = []
-            timestamp_dt = self._ms_to_china_datetime(int(klines_data[0][2][0]))
+            # timestamp_dt = self._ms_to_china_datetime(int(klines_data[0][2][0]))
             for exchange, symbol, kline in klines_data:
                 # 确保kline数据格式正确: [timestamp_ms, open, high, low, close, volume]
                 if len(kline) >= 6:
                     # 将毫秒时间戳转换为中国时间（无时区的datetime）
 
-                    # timestamp_dt = self._ms_to_china_datetime(int(kline[0]))
+                    timestamp_dt = self._ms_to_china_datetime(int(kline[0]))
 
                     rows.append((
                         timestamp_dt,  # timestamp (TIMESTAMP WITHOUT TIME ZONE)
@@ -147,7 +148,7 @@ class PgManager:
             async with self.connection_pool.acquire() as conn:
                 async with conn.transaction():
                     await conn.executemany(
-                        f"INSERT INTO {table_name} "
+                        f"INSERT INTO {self.table_name} "
                         "(timestamp, open, high, low, close, volume, exchange, pair) "
                         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
                         "ON CONFLICT (timestamp, exchange, pair) DO UPDATE SET "

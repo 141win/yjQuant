@@ -98,18 +98,53 @@ class ConfigManager:
 
         logger.info("配置管理器已停止")
 
+    # 内部方法：从 system.json 加载配置文件列表
+    def _load_config_files_list(self) -> Dict[str, str]:
+        """从 system.json 文件加载配置文件列表"""
+        system_config_file = self.config_dir / "system.json"
+        
+        if not system_config_file.exists():
+            logger.warning("system.json 文件不存在，使用默认配置文件列表")
+            return {
+                "system": "system.json",
+                "email": "email.json", 
+                "strategy": "strategy.json",
+                "data_engine": "data_engine.json"
+            }
+        
+        try:
+            with open(system_config_file, 'r', encoding='utf-8') as f:
+                system_config = json.load(f)
+            
+            config_files = system_config.get("config_files", {})
+            if not config_files:
+                logger.warning("system.json 中未找到 config_files 配置，使用默认配置文件列表")
+                return {
+                    "system": "system.json",
+                    "email": "email.json",
+                    "strategy": "strategy.json", 
+                    "data_engine": "data_engine.json"
+                }
+            
+            logger.info(f"从 system.json 加载配置文件列表: {list(config_files.keys())}")
+            return config_files
+            
+        except Exception as e:
+            logger.error(f"加载 system.json 失败: {e}，使用默认配置文件列表")
+            return {
+                "system": "system.json",
+                "email": "email.json",
+                "strategy": "strategy.json",
+                "data_engine": "data_engine.json"
+            }
+
     # 内部方法：加载所有配置文件
     async def _load_all_configs(self) -> None:
         """加载所有配置文件"""
         logger.info("开始加载所有配置文件")
 
-        # 定义配置文件列表
-        config_files = {
-            "system": "system.json",
-            "email": "email.json",
-            "strategy": "strategy.json",
-            "data_engine": "data_engine.json"
-        }
+        # 从 system.json 获取配置文件列表
+        config_files = self._load_config_files_list()
 
         for config_name, filename in config_files.items():
             config_file = self.config_dir / filename

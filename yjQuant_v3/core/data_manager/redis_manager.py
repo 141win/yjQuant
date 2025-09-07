@@ -9,6 +9,7 @@ Redis管理器 - 负责Redis连接管理和K线数据缓存
 
 import logging
 import json
+import asyncio
 from typing import Dict, Any, List, Tuple
 from datetime import datetime
 import redis.asyncio as redis
@@ -29,6 +30,7 @@ class RedisManager:
         self.config = config
         self.redis_client = None
         self.connection_pool = None
+        self._health_check_task = None
         
         # Redis连接参数
         self.host = config.get("host", "localhost")
@@ -38,7 +40,55 @@ class RedisManager:
         self.max_connections = config.get("max_connections", 10)
         self.cache_ttl_minute = config.get("caching_ttl_minute", 4320)
         
+        # 连接超时和重试配置
+        self.socket_timeout = config.get("socket_timeout", 5)  # 套接字超时（秒）
+        self.socket_connect_timeout = config.get("socket_connect_timeout", 60)  # 连接超时（秒）
+        self.retry_on_timeout = config.get("retry_on_timeout", True)  # 超时时重试
+        self.health_check_interval = config.get("health_check_interval", 30)  # 健康检查间隔（秒）
+        
         logger.info(f"Redis管理器初始化完成: {self.host}:{self.port}")
+    
+    async def _check_connection(self) -> bool:
+        """检查Redis连接是否健康"""
+        try:
+            if not self.redis_client:
+                return False
+            await self.redis_client.ping()
+            return True
+        except Exception as e:
+            logger.warning(f"Redis连接检查失败: {e}")
+            return False
+    
+    async def _ensure_connection(self) -> bool:
+        """确保Redis连接可用，如果连接断开则重新连接"""
+        if await self._check_connection():
+            return True
+        
+        logger.warning("Redis连接已断开，尝试重新连接...")
+        try:
+            # 重新创建连接
+            await self.stop()
+            await self.start()
+            return True
+        except Exception as e:
+            logger.error(f"Redis重连失败: {e}")
+            return False
+    
+    async def _health_check_loop(self) -> None:
+        """定期健康检查循环"""
+        while True:
+            try:
+                await asyncio.sleep(self.health_check_interval)
+                
+                if not await self._check_connection():
+                    logger.warning("健康检查发现Redis连接异常，尝试重连...")
+                    await self._ensure_connection()
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"健康检查循环出错: {e}")
+                await asyncio.sleep(5)  # 出错后等待5秒再继续
     
     async def start(self) -> None:
         """启动Redis管理器"""
@@ -48,7 +98,10 @@ class RedisManager:
                 f"redis://{self.host}:{self.port}/{self.db}",
                 password=self.password,
                 max_connections=self.max_connections,
-                decode_responses=True
+                decode_responses=True,
+                socket_timeout=self.socket_timeout,
+                socket_connect_timeout=self.socket_connect_timeout,
+                retry_on_timeout=self.retry_on_timeout
             )
             
             # 创建Redis客户端
@@ -56,6 +109,9 @@ class RedisManager:
             
             # 测试连接
             await self.redis_client.ping()
+            
+            # 启动健康检查任务
+            self._health_check_task = asyncio.create_task(self._health_check_loop())
             
             logger.info("Redis管理器启动成功")
             
@@ -66,6 +122,15 @@ class RedisManager:
     async def stop(self) -> None:
         """停止Redis管理器"""
         try:
+            # 停止健康检查任务
+            if self._health_check_task:
+                self._health_check_task.cancel()
+                try:
+                    await self._health_check_task
+                except asyncio.CancelledError:
+                    pass
+                self._health_check_task = None
+            
             if self.redis_client:
                 await self.redis_client.close()
                 self.redis_client = None
@@ -116,6 +181,11 @@ class RedisManager:
             if not klines_data:
                 return True
             
+            # 确保连接可用
+            if not await self._ensure_connection():
+                logger.error("无法建立Redis连接")
+                return False
+            
             # 以毫秒为单位的时间窗口
             window_ms = self.config.get("cache_ttl_minute")* 60 * 1000 # expire_minutes * 60 * 1000
             cutoff = int(datetime.now().timestamp() * 1000) - window_ms
@@ -150,6 +220,15 @@ class RedisManager:
             
         except Exception as e:
             logger.error(f"批量写入Redis ZSET失败: {e}")
+            # 如果是连接相关错误，尝试重连
+            if "网络" in str(e) or "连接" in str(e) or "timeout" in str(e).lower():
+                logger.info("检测到连接错误，尝试重新连接...")
+                try:
+                    await self.stop()
+                    await self.start()
+                    logger.info("Redis重连成功")
+                except Exception as reconnect_error:
+                    logger.error(f"Redis重连失败: {reconnect_error}")
             return False
     
     def get_status(self) -> Dict[str, Any]:

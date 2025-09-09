@@ -201,7 +201,3 @@ class EventEngine:
     def get_total_subscription_count(self) -> int:
         """获取总订阅数量"""
         return len(self._subscription_map)
-    
-    def is_active(self) -> bool:
-        """检查事件引擎是否处于活动状态"""
-        return self._active

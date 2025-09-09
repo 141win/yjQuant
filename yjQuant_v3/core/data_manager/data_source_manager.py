@@ -1,10 +1,11 @@
 """
-数据源管理器 - 负责从外部数据源获取K线数据
+数据源管理器 - 负责从外部数据源获取K线数据和ticker数据
 
 职责:
 - 管理多个数据源连接
-- 实现CCXT接口获取K线数据
+- 实现CCXT接口获取K线数据和ticker数据
 - 支持分钟级和小时级K线数据获取
+- 支持实时ticker数据获取
 - 处理数据源配置变更
 """
 
@@ -19,13 +20,15 @@ logger = logging.getLogger(__name__)
 
 class DataSourceManager:
     """
-    数据源管理器 - 负责从外部数据源获取K线数据
+    数据源管理器 - 负责从外部数据源获取K线数据和ticker数据
     
     功能:
     - 支持分钟级和小时级K线数据获取 (fetch方法)
+    - 支持实时ticker数据获取 (fetch_tickers方法)
     - 通过timeframe参数指定时间框架 ("1m" 或 "1h")
     - 并发获取多个交易所数据
     - 自动重试机制
+    - 提供快速获取ticker数据的静态方法
     """
 
     def __init__(self, config: List[Dict[str, Any]]):
@@ -72,6 +75,7 @@ class DataSourceManager:
         Returns:
             List[Tuple[str, str, List]]: [(exchange_id, symbol, kline_data), ...]
         """
+        # 获取当前时间的前一分钟、或前一小时时间戳
         ts = timestamp_func()
         # asyncio.gather并发执行多个任务，完成先后顺序可能不固定，但会确保返回结果的顺序与传入的协程顺序一致
         tasks = []
@@ -109,6 +113,31 @@ class DataSourceManager:
         else:
             raise ValueError(f"不支持的时间框架: {timeframe}，支持的时间框架: '1m', '1h'")
 
+    # 对外方法：获取ticker数据
+    async def fetch_tickers(self):
+        """
+        获取所有交易所的ticker数据
+        
+        Returns:
+            List[Tuple[str, str, Tuple]]: [(exchange_id, symbol, ticker_data), ...]
+        """
+        # 并发获取所有交易所的ticker数据
+        tasks = []
+        for exchange_id, config in self.exchanges_config.items():
+            tasks.append(asyncio.create_task(self._fetch_all_tickers(exchange_id, config.get("symbols"))))
+        results = await asyncio.gather(*tasks)
+        
+        all_tickers = []
+        for (exchange_id, config), tickers in zip(self.exchanges_config.items(), results):
+            for symbol, ticker in tickers.items(): # tickers是字典格式
+                if ticker:
+                    ts = ticker.get("timestamp")
+                    last = ticker.get("last")
+                    all_tickers.append((exchange_id, symbol, (last, ts)))
+        
+        logger.info(f"获取到 {len(all_tickers)} 条ticker数据")
+        return all_tickers
+
     # 内部方法：从指定交易所获取指定交易对列表数据
     async def _fetch_all_klines(self, exchange_id: Any, symbols: str, timeframe, since):
         """
@@ -127,6 +156,32 @@ class DataSourceManager:
         finally:
             await exchange.close()
 
+    # 内部方法：从指定交易所获取指定交易对列表的ticker数据
+    async def _fetch_all_tickers(self, exchange_id: Any, symbols: List[str]):
+        """
+        输入：交易所ID、符号列表
+        输出：[(symbol, ticker或None), ...]
+        主要逻辑：创建并预加载市场，批量并发抓取ticker
+        """
+        exchange = self._create_exchange(exchange_id)
+        if not exchange:
+            logger.error(f"无法创建交易所 {exchange_id}")
+            return [(symbol, None) for symbol in symbols]
+        
+        try:
+            # 预加载市场，带重试
+            await self._async_retry(exchange.load_markets)
+
+            # 使用批量请求方法，一个交易所的所有交易对一次请求完毕
+            results = await exchange.fetch_tickers(symbols)
+
+            return results
+        except Exception as e:
+            logger.error(f"获取 {exchange_id} ticker数据失败: {e}")
+            return [(symbol, None) for symbol in symbols]
+        finally:
+            await exchange.close()
+
     # 内部方法：异步重试
     async def _async_retry(self, fn, *args, **kwargs):
         """异步重试机制"""
@@ -142,6 +197,7 @@ class DataSourceManager:
                 return None
         return None
 
+
     """----------------------------辅助函数---------------------------------"""
     # 内部方法：从指定交易所获取指定交易对数据，主要由_fetch_all_klines()调用
     @staticmethod
@@ -152,6 +208,18 @@ class DataSourceManager:
         except Exception as e:
             import traceback
             print(f"{exchange.id} {symbol} error: {repr(e)}")
+            traceback.print_exc()
+            return symbol, None
+
+    # 内部方法：从指定交易所获取指定交易对的ticker数据，主要由_fetch_all_tickers()调用
+    @staticmethod
+    async def _fetch_ticker(exchange, symbol):
+        try:
+            ticker = await exchange.fetch_ticker(symbol)
+            return symbol, ticker
+        except Exception as e:
+            import traceback
+            print(f"{exchange.id} {symbol} ticker error: {repr(e)}")
             traceback.print_exc()
             return symbol, None
 
@@ -167,7 +235,7 @@ class DataSourceManager:
             }
             # 超时时间
             HTTP_TIMEOUT_MS = 20000
-            # 使用 async.py 的稳定配置
+
             common_kwargs = {
                 'enableRateLimit': True,
                 'sandbox': False,

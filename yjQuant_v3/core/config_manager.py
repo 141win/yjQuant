@@ -160,7 +160,7 @@ class ConfigManager:
                     self.config_files[config_name] = config_file
 
                     # 计算文件哈希
-                    file_hash = self._calculate_file_hash(config_file)
+                    file_hash = self.calculate_file_hash(config_file) # 用的二进制模式读取，此前用的文件读写
                     self.config_hashes[config_name] = file_hash
 
                     logger.info(f"配置文件加载成功: {config_name}")
@@ -193,7 +193,7 @@ class ConfigManager:
 
             try:
                 # 计算当前文件哈希
-                current_hash = self._calculate_file_hash(config_file)
+                current_hash = self.calculate_file_hash(config_file)
                 old_hash = self.config_hashes.get(config_name)
 
                 # 检查是否有变更
@@ -247,7 +247,7 @@ class ConfigManager:
 
     # 内部方法：计算文件哈希值，用于判断文件是否修改
     @staticmethod
-    def _calculate_file_hash(file_path: Path) -> str:
+    def calculate_file_hash(file_path: Path) -> str:
         """计算文件哈希值"""
         try:
             with open(file_path, 'rb') as f:
@@ -267,7 +267,6 @@ class ConfigManager:
         try:
             event_data = {
                 "config_name": config_name,
-                # "old_config": old_value,
                 "new_config": new_value,
                 "timestamp": datetime.now().isoformat(),
                 "source": "config_manager"

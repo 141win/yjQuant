@@ -37,7 +37,7 @@ class DataEngine:
         self._db_manager = None
         
         # 任务ID
-        self._data_request_task_id = None
+        self._data_request_task_id = []
         
         # 数据请求配置
         self.data_engine_config = {}
@@ -59,26 +59,28 @@ class DataEngine:
 
         # 获取数据引擎配置
         self.data_engine_config = self.config_manager.get_config("data_engine")
-        self.data_request_config = self.data_engine_config.get("data_request")
 
+        data_request_config = self.data_engine_config.get("data_request") # 得到一个请求任务数组：目前有K线、ticker
+        for request_config in data_request_config:
+            self.data_request_config[request_config["name"]] = request_config # self.data_engine_config.get("data_request")
+        # print(self.data_request_config)
         # 初始化子管理器
         await self._initialize_managers()
         
         # 订阅事件
-        self._event_engine.subscribe("data_request", self._handle_data_request)
+        self._event_engine.subscribe("ticker_data_request", self._handle_ticker_data_request)
+        self._event_engine.subscribe("klines_data_request", self._handle_klines_data_request)
         self._event_engine.subscribe("data_engine_config_changed", self._handle_config_change)
-        
-        # 从配置获取数据请求频率
-        interval = self.data_request_config.get("interval", 3600)  # 默认1h
-        
-        # 向时钟引擎注册数据请求任务
-        self._data_request_task_id = self._clock_engine.register_task(
-            name="data_request",
-            event_type="data_request",
-            interval=interval,
-            event_data={"source": "data_engine"}
-        )
-        
+
+        for name,request_config in self.data_request_config.items(): # 注册多个定时请求任务
+            # 向时钟引擎注册数据请求任务
+            self._data_request_task_id.append(self._clock_engine.register_task(
+                name=request_config["name"],
+                event_type=request_config["name"],
+                interval=request_config["interval"],
+                event_data={"source": "data_engine","timeframe": request_config.get("timeframe",None)},
+            ))
+
         logger.info("数据引擎启动成功")
 
     # 对外开放
@@ -90,11 +92,13 @@ class DataEngine:
         
         # 取消数据请求任务
         if self._data_request_task_id and self._clock_engine:
-            self._clock_engine.unregister_task(self._data_request_task_id)
+            for task_id in self._data_request_task_id: # 取消所有定时任务
+                self._clock_engine.unregister_task(task_id)
         
         # 取消事件订阅
         if self._event_engine:
-            self._event_engine.unsubscribe_by_handler("data_request", self._handle_data_request)
+            self._event_engine.unsubscribe_by_handler("ticker_data_request", self._handle_ticker_data_request)
+            self._event_engine.unsubscribe_by_handler("klines_data_request", self._handle_klines_data_request)
             self._event_engine.unsubscribe_by_handler("data_engine_config_changed", self._handle_config_change)
         
         # 停止子管理器
@@ -110,10 +114,10 @@ class DataEngine:
     async def _initialize_managers(self) -> None:
         """初始化子管理器"""
         try:
-            # # 初始化Redis管理器
-            # from yjQuant_v3.core.data_manager.redis_manager import RedisManager
-            # self._redis_manager = RedisManager(self.data_engine_config.get("redis", {}))
-            # await self._redis_manager.start()
+            # 初始化Redis管理器
+            from yjQuant_v3.core.data_manager.redis_manager import RedisManager
+            self._redis_manager = RedisManager(self.data_engine_config.get("redis", {}))
+            await self._redis_manager.start()
 
             # 初始化数据源管理器
             from yjQuant_v3.core.data_manager.data_source_manager import DataSourceManager
@@ -135,8 +139,8 @@ class DataEngine:
     async def _stop_managers(self) -> None:
         """停止子管理器"""
         try:
-            # if self._redis_manager:
-            #     await self._redis_manager.stop()
+            if self._redis_manager:
+                await self._redis_manager.stop()
 
             # data_source_manager没有stop
             # if self._data_source_manager:
@@ -150,8 +154,9 @@ class DataEngine:
         except Exception as e:
             logger.error(f"停止子管理器失败: {e}")
 
+    """-----------------------------事件处理方法---------------------------------------"""
     # < ------------------  处理事件函数 ----------->
-    # 处理定时每分钟请求数据的事件
+    # 处理定时请求k线数据的事件
     # 1、直接调用封装好的数据源管理器的fetch()方法，该方法自动根据数据源管理器内配置好的交易所：数据对进行异步请求，并返回所有数据
     # fetch()返回的数据格式[(exchange_id, symbol, kline或None), ...]  ,对应（交易所，交易对，kline数据）
     #             'timestamp': kline[0],
@@ -163,7 +168,7 @@ class DataEngine:
     # 2、调用redis管理器方法batch_store_klines()方法，该方法自动将传入数据[(exchange_id, symbol, kline或None), ...]批量插入redis
     # 3、发布数据到达事件——该事件订阅者：策略引擎，会执行所有策略
     # 对外开放：请求数据事件处理器（注册用）
-    async def _handle_data_request(self, event_data: Any = None) -> None:
+    async def _handle_klines_data_request(self, event_data: Any = None) -> None:
         """
         处理定时数据请求事件
         
@@ -173,14 +178,14 @@ class DataEngine:
         3. 发布数据到达事件
         """
         try:
-            logger.info("开始处理数据请求事件...")
+            logger.info("开始处理klines数据请求事件...")
             
             # 1. 从数据源管理器获取K线数据
             if not self._data_source_manager:
                 logger.error("数据源管理器未初始化")
                 return
             
-            klines_data = await self._data_source_manager.fetch(timeframe=self.data_request_config["timeframe"])
+            klines_data = await self._data_source_manager.fetch(timeframe=event_data["timeframe"])
             
             if not klines_data:
                 logger.warning("未获取到K线数据")
@@ -223,10 +228,38 @@ class DataEngine:
                 logger.error("K线数据存储到pg数据库失败")
 
         except Exception as e:
-            logger.error(f"处理数据请求事件失败: {e}")
+            logger.error(f"处理klines数据请求事件失败: {e}")
             import traceback
             traceback.print_exc()
 
+    async def _handle_ticker_data_request(self, event_data: Any = None) -> None:
+        """
+        处理ticker数据请求事件
+        请求ticker数据，发布数据到达事件
+        :param event_data:
+        :return:
+        """
+        try:
+            logger.info("开始处理ticker数据请求事件...")
+
+            # 1. 从数据源管理器获取K线数据
+            if not self._data_source_manager:
+                logger.error("数据源管理器未初始化")
+                return
+
+            ticker_data = await self._data_source_manager.fetch_tickers()
+
+            if not ticker_data:
+                logger.warning("未获取到ticker数据")
+                return
+
+            await self._publish_data_arrived_event(ticker_data)
+            logger.info(f"成功获取 {len(ticker_data)} 条ticker线数据")
+
+        except Exception as e:
+            logger.error(f"处理ticker数据请求事件失败: {e}")
+            import traceback
+            traceback.print_exc()
     # 对外开放：处理配置变更事件
     # 1、从事件数据中读取最新配置，并调用所有子组件的配置修改方法，将新配置传入，不关心子组件内部更新配置细节
     async def _handle_config_change(self, event_data: Any = None) -> None:
@@ -253,10 +286,10 @@ class DataEngine:
             logger.info(f"接收到新配置: {list(new_config.keys())}")
             logger.info(f"配置：: {new_config}")
             
-            # 更新数据请求配置
-            if "data_request" in new_config:
-                self.data_engine_config.update(new_config["data_request"])
-                logger.info("数据请求配置已更新")
+            # # 更新数据请求配置
+            # if "data_request" in new_config:
+            #     self.data_engine_config.update(new_config["data_request"])
+            #     logger.info("数据请求配置已更新")
 
 
             # 更新Redis配置
@@ -306,7 +339,7 @@ class DataEngine:
     # 发布数据到达事件
     # 1、调用事件引擎发布事件方法，发布数据到达事件（只是通知下游数据已经到达并存储完毕，可以获取，下游可以从事件数据中获取，也可以自行从redis、数据库获取）
     # event_engine 发布事件接口： async def publish(self, event_type: str, event_data: Any = None) -> None:
-    async def _publish_data_arrived_event(self, klines_data: List[Tuple[str, str, List]]) -> None:
+    async def _publish_data_arrived_event(self, data: List[Tuple]) -> None:
         """
         发布数据到达事件
         
@@ -314,7 +347,7 @@ class DataEngine:
         下游可以自行从Redis或数据库获取数据
         
         Args:
-            klines_data: K线数据列表，格式为 [(exchange, symbol, kline), ...]
+            data: 数据列表，格式为 [(exchange, symbol, kline), ...]
         """
         try:
             if not self._event_engine:
@@ -322,19 +355,18 @@ class DataEngine:
                 return
             
             # 构建事件数据，包含数据摘要信息（优化：减少数据量）
+            len_data = len(data)
             event_data = {
                 "timestamp": datetime.now().isoformat(),
-                "data_count": len(klines_data),
-                "exchanges": list(set(exchange for exchange, _, _ in klines_data)),
-                "symbols": list(set(symbol for _, symbol, _ in klines_data))[:10],  # 只显示前10个交易对
-                "klines_data": klines_data[:5],  # 只发送前5条K线数据
-                "message": "K线数据已到达并存储完毕，可从Redis获取"
+                "data_count": len_data,
+                "data": data,  # 实时数据
+                "message": "ticker数据已到达"
             }
             
             # 发布数据到达事件
             await self._event_engine.publish("data_arrived", event_data)
             
-            logger.info(f"数据到达事件已发布，数据量: {len(klines_data)}")
+            logger.info(f"数据到达事件已发布，数据量: {len_data}")
             
         except Exception as e:
             logger.error(f"发布数据到达事件失败: {e}")
@@ -343,12 +375,12 @@ class DataEngine:
 
     """------------------------辅助函数-------------------------------"""
     # 内部方法：ms单位时间戳转为中国时间，用于插入数据库前的数据清理
-    @staticmethod
-    def _ms_to_china_datetime(ms: int) -> datetime:
-        """
-        Convert epoch milliseconds to Asia/Shanghai timezone-aware datetime.
-        """
-        # China Standard Time is UTC+8, no DST
-        utc_dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
-        china_dt = utc_dt.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
-        return china_dt
+    # @staticmethod
+    # def _ms_to_china_datetime(ms: int) -> datetime:
+    #     """
+    #     Convert epoch milliseconds to Asia/Shanghai timezone-aware datetime.
+    #     """
+    #     # China Standard Time is UTC+8, no DST
+    #     utc_dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    #     china_dt = utc_dt.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    #     return china_dt

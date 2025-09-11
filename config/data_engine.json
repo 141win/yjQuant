@@ -1,6 +1,6 @@
 {
   "redis": {
-    "host": "47.108.199.234",
+    "host": "ip",
     "port": 6379,
     "db": 0,
     "password": null,

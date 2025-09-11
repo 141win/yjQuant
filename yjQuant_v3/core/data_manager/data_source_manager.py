@@ -129,6 +129,9 @@ class DataSourceManager:
         
         all_tickers = []
         for (exchange_id, config), tickers in zip(self.exchanges_config.items(), results):
+            # with open("tickers.json","w",encoding="utf-8") as f:
+            #     import json
+            #     json.dump(tickers,f,ensure_ascii=False,indent=2)
             for symbol, ticker in tickers.items(): # tickers是字典格式
                 if ticker:
                     ts = ticker.get("timestamp")
@@ -175,6 +178,16 @@ class DataSourceManager:
             # 使用批量请求方法，一个交易所的所有交易对一次请求完毕
             results = await exchange.fetch_tickers(symbols)
 
+            # 若为 gateio，部分 ticker 可能缺少 timestamp，这里统一补齐本地毫秒时间戳
+            if getattr(exchange, 'id', '') == 'gateio' and isinstance(results, dict):
+                from datetime import datetime
+                now_ms = int(datetime.now().timestamp() * 1000)
+                for sym, tk in results.items():
+                    if not isinstance(tk, dict):
+                        continue
+                    if tk.get('timestamp') is None:
+                        tk['timestamp'] = now_ms
+
             return results
         except Exception as e:
             logger.error(f"获取 {exchange_id} ticker数据失败: {e}")
@@ -216,6 +229,20 @@ class DataSourceManager:
     async def _fetch_ticker(exchange, symbol):
         try:
             ticker = await exchange.fetch_ticker(symbol)
+            # gateio 某些返回的 timestamp 为空时，使用本地时间生成毫秒时间戳
+            if getattr(exchange, 'id', '') == 'gateio':
+                ts = ticker.get('timestamp') if isinstance(ticker, dict) else None
+                if ts is None:
+                    from datetime import datetime
+                    # 本地时间 -> UNIX 毫秒时间戳
+                    local_ms = int(datetime.now().timestamp() * 1000)
+                    # 确保 ticker 为可写字典
+                    ticker = dict(ticker) if isinstance(ticker, dict) else {}
+                    ticker['timestamp'] = local_ms
+                    # try:
+                    #     ticker['datetime'] = datetime.fromtimestamp(local_ms / 1000).isoformat()
+                    # except Exception:
+                    #     pass
             return symbol, ticker
         except Exception as e:
             import traceback

@@ -168,7 +168,7 @@ class YJQuantSystem:
         try:
             logger.info("正在启动策略引擎...")
             self.strategy_engine = StrategyEngine(self.config_manager)
-            await self.strategy_engine.start(self.event_engine, self.clock_engine,self.db_manager,self.redis_manager)
+            await self.strategy_engine.start(self.event_engine, self.db_manager, self.redis_manager)
             logger.info("✓ 策略引擎启动成功")
         except Exception as e:
             logger.error(f"策略引擎启动失败: {e}")

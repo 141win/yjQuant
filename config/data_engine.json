@@ -6,6 +6,10 @@
     "password": null,
     "max_connections": 20,
     "cache_ttl_minute": 4320,
+    "socket_timeout": 5,
+    "socket_connect_timeout": 60,
+    "retry_on_timeout": true,
+    "health_check_interval": 30,
     "?": "缓存过期时间3 * 24 * 60"
   },
   "exchanges": [
@@ -835,13 +839,21 @@
     "host": "127.0.0.1",
     "port": 5432,
     "database": "Cryptocurrency",
+    "table": "_1h",
     "user": "postgres",
     "password": "123456",
     "min_connections": 1,
     "max_connections": 10
   },
-  "data_request": {
-    "interval": 60,
-    "batch_size": 1000
-  }
+  "data_request": [
+    {
+      "name": "klines_data_request",
+      "interval": 3600,
+      "timeframe": "1h"
+    },
+    {
+      "name": "ticker_data_request",
+      "interval": 60
+    }
+  ]
 }

@@ -1,0 +1,18 @@
+{
+  "name": "yjQuant v3.0",
+  "version": "3.0.0",
+  "debug": false,
+  "log_level": "INFO",
+  "data_dir": "./data",
+  "temp_dir": "./temp",
+  "max_workers": 4,
+  "heartbeat_interval": 60,
+  "config_check_interval": 60,
+  "config_files": {
+    "system": "system.json",
+    "email": "email.json",
+    "strategy": "strategy.json",
+    "data_engine": "data_engine.json"
+  }
+}
+

@@ -106,7 +106,6 @@ class PgManager:
 
         Args:
             klines_data: K线数据列表，格式为 [(exchange, symbol, kline), ...]
-            table_name: 表名，默认为 "klines"
 
         Returns:
             写入是否成功
@@ -164,107 +163,6 @@ class PgManager:
             logger.error(f"批量写入PostgreSQL失败: {e}")
             return False
 
-    # 辅助方法：创建表结构（如果需要）
-    async def create_klines_table(self, table_name: str = "klines") -> bool:
-        """
-        创建K线数据表
-        
-        Args:
-            table_name: 表名
-            
-        Returns:
-            创建是否成功
-        """
-        try:
-            if not self.connection_pool:
-                logger.error("PostgreSQL连接池未初始化")
-                return False
-
-            create_table_sql = f"""
-            CREATE TABLE IF NOT EXISTS {table_name} (
-                timestamp TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-                open DECIMAL NOT NULL,
-                high DECIMAL NOT NULL,
-                low DECIMAL NOT NULL,
-                close DECIMAL NOT NULL,
-                volume DECIMAL NOT NULL,
-                exchange VARCHAR(50) NOT NULL,
-                pair VARCHAR(50) NOT NULL,
-                PRIMARY KEY (timestamp, exchange, pair)
-            );
-            
-            CREATE INDEX IF NOT EXISTS idx_{table_name}_timestamp ON {table_name}(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_{table_name}_exchange_pair ON {table_name}(exchange, pair);
-            """
-
-            async with self.connection_pool.acquire() as conn:
-                await conn.execute(create_table_sql)
-
-            logger.info(f"K线数据表 {table_name} 创建成功")
-            return True
-
-        except Exception as e:
-            logger.error(f"创建K线数据表失败: {e}")
-            return False
-
-    # 辅助方法：查询K线数据
-    async def query_klines(self, exchange: str, symbol: str,
-                           start_time: int = None, end_time: int = None,
-                           limit: int = 1000, table_name: str = "klines") -> List[Dict]:
-        """
-        查询K线数据
-        
-        Args:
-            exchange: 交易所名称
-            symbol: 交易对
-            start_time: 开始时间戳
-            end_time: 结束时间戳
-            limit: 限制返回条数
-            table_name: 表名
-            
-        Returns:
-            K线数据列表
-        """
-        try:
-            if not self.connection_pool:
-                logger.error("PostgreSQL连接池未初始化")
-                return []
-
-            pair = symbol.replace("/", "_").replace(":", "_")
-
-            sql = f"""
-            SELECT timestamp, open, high, low, close, volume, exchange, pair
-            FROM {table_name}
-            WHERE exchange = $1 AND pair = $2
-            """
-            params = [exchange, pair]
-            param_count = 2
-
-            if start_time is not None:
-                param_count += 1
-                sql += f" AND timestamp >= ${param_count}"
-
-                start_dt = self._ms_to_china_datetime(int(start_time))
-                params.append(start_dt)
-
-            if end_time is not None:
-                param_count += 1
-                sql += f" AND timestamp <= ${param_count}"
-                end_dt = self._ms_to_china_datetime(int(end_time))
-                params.append(end_dt)
-
-            sql += f" ORDER BY timestamp DESC LIMIT ${param_count + 1}"
-            params.append(limit)
-
-            async with self.connection_pool.acquire() as conn:
-                rows = await conn.fetch(sql, *params)
-
-            return [dict(row) for row in rows]
-
-        except Exception as e:
-            logger.error(f"查询K线数据失败: {e}")
-            return []
-
     # 对外开放：获取状态信息
     def get_status(self) -> Dict[str, Any]:
         """获取状态信息"""
@@ -278,8 +176,84 @@ class PgManager:
             "connected": self.connection_pool is not None
         }
 
+    # 通用数据库查询方法
+    async def execute_query(self, sql: str, params: List[Any] = None) -> List[Dict]:
+        """
+        执行SQL查询并返回结果
+        
+        Args:
+            sql: SQL查询语句
+            params: 查询参数列表
+            
+        Returns:
+            查询结果列表，每行为字典格式
+        """
+        try:
+            if not self.connection_pool:
+                logger.error("PostgreSQL连接池未初始化")
+                return []
+            
+            async with self.connection_pool.acquire() as conn:
+                if params:
+                    rows = await conn.fetch(sql, *params)
+                else:
+                    rows = await conn.fetch(sql)
+            
+            # 转换结果格式
+            result = []
+            for row in rows:
+                try:
+                    # 将行数据转换为字典，处理特殊类型
+                    row_dict = {}
+                    for key, value in row.items():
+                        if hasattr(value, 'timestamp'):
+                            # datetime对象转换为毫秒时间戳
+                            row_dict[key] = int(value.timestamp() * 1000)
+                        elif hasattr(value, '__float__'):
+                            # Decimal等数值类型转换为float
+                            row_dict[key] = float(value)
+                        else:
+                            # 其他类型直接使用
+                            row_dict[key] = value
+                    
+                    result.append(row_dict)
+                except Exception as row_error:
+                    logger.error(f"处理行数据失败: {row_error}, 行数据: {dict(row)}")
+                    continue
+            
+            logger.debug(f"SQL查询执行成功，返回 {len(result)} 条数据")
+            return result
+            
+        except Exception as e:
+            logger.error(f"SQL查询执行失败: {e}")
+            return []
+
+    async def execute_query_with_timeframe(self, sql_template: str, timeframe: str, params: List[Any] = None) -> List[Dict]:
+        """
+        执行带时间框架的SQL查询
+        
+        Args:
+            sql_template: SQL模板，包含 {timeframe} 占位符
+            timeframe: 时间框架，如 "1h", "2h", "1d"
+            params: 查询参数列表
+            
+        Returns:
+            查询结果列表，每行为字典格式
+        """
+        try:
+            # 替换时间框架占位符
+            sql = sql_template.format(timeframe=timeframe)
+            
+            # 执行查询
+            return await self.execute_query(sql, params)
+            
+        except Exception as e:
+            logger.error(f"带时间框架的SQL查询执行失败: {e}")
+            return []
+
     """-----------------辅助函数---------------"""
 
+    # 内部方法：ms单位时间戳转为中国时间，用于插入数据库前的数据清理
     @staticmethod
     def _ms_to_china_datetime(ms: int) -> datetime:
         """

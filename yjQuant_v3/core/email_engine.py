@@ -10,7 +10,7 @@ import logging
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional,List
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +33,13 @@ class EmailEngine:
         
         self._event_engine = event_engine
         
-        # 加载邮件配置
-        await self._load_email_config()
-        
+        # # 加载邮件配置
+        # await self._load_email_config()
+        self._email_config = self.config_manager.get_config("email")
+
         # 订阅邮件事件、邮件配置变更事件
-        self._event_engine.subscribe("email_event", self._handle_email_event)
-        self._event_engine.subscribe("email_config_changed", self._handle_email_config_change)
+        self._event_engine.subscribe("email_event", self.handle_email_event)
+        self._event_engine.subscribe("email_config_changed", self.handle_config_change)
         logger.info("邮件引擎启动成功")
     
     async def stop(self) -> None:
@@ -48,24 +49,25 @@ class EmailEngine:
             return
         
         # 取消事件订阅
-        self._event_engine.unsubscribe_by_handler("email_event", self._handle_email_event)
+        self._event_engine.unsubscribe_by_handler("email_event", self.handle_email_event)
+        self._event_engine.unsubscribe_by_handler("email_config_changed", self.handle_config_change)
         self._event_engine = None
         
         logger.info("邮件引擎已停止")
     
-    async def _load_email_config(self) -> None:
-        """加载邮件配置"""
-        try:
-            config = self.config_manager.get_config("email")
-            if config:
-                self._email_config = config
-                logger.info("邮件配置加载完成")
-            else:
-                logger.warning("未找到邮件配置")
-        except Exception as e:
-            logger.error(f"加载邮件配置失败: {e}")
+    # async def _load_email_config(self) -> None:
+    #     """加载邮件配置"""
+    #     try:
+    #         config = self.config_manager.get_config("email")
+    #         if config:
+    #             self._email_config = config
+    #             logger.info("邮件配置加载完成")
+    #         else:
+    #             logger.warning("未找到邮件配置")
+    #     except Exception as e:
+    #         logger.error(f"加载邮件配置失败: {e}")
     
-    async def _handle_email_event(self, event_data: Any) -> None:
+    async def handle_email_event(self, event_data: Any) -> None:
         """处理邮件事件"""
         try:
             logger.info(f"收到邮件事件: {event_data}")
@@ -83,7 +85,7 @@ class EmailEngine:
         except Exception as e:
             logger.error(f"处理邮件事件失败: {e}")
 
-    async def _handle_email_config_change(self, event_data: Any) -> None:
+    async def handle_config_change(self, event_data: Any) -> None:
         """处理邮件配置变更事件"""
         logger.info("开始处理邮件引擎配置变更事件...")
 
@@ -113,13 +115,14 @@ class EmailEngine:
             username = self._email_config.get("username")
             password = self._email_config.get("password")
             sender = self._email_config.get("from_email")
-            
-            if not all([smtp_server, smtp_port, username, password, sender]):
+            receiver = self._email_config.get("to_email")
+
+            if not all([smtp_server, smtp_port, username, password, sender, receiver]):
                 logger.error("邮件配置不完整")
                 return False
             
             # 构建邮件
-            msg = self._build_email_message(email_data, sender)
+            msg = self._build_email_message(email_data, sender, receiver)
             
             # 发送邮件
             success = self._send_via_smtp(smtp_server, smtp_port, username, password, msg)
@@ -137,7 +140,6 @@ class EmailEngine:
                 return event_data
             elif hasattr(event_data, '__dict__'):
                 return {
-                    'receiver': getattr(event_data, 'receiver', ''),
                     'subject': getattr(event_data, 'subject', ''),
                     'content': getattr(event_data, 'content', ''),
                     'content_type': getattr(event_data, 'content_type', 'text')
@@ -151,11 +153,11 @@ class EmailEngine:
             return None
 
     @staticmethod
-    def _build_email_message(email_data: Dict[str, Any], sender: str) -> MIMEMultipart:
+    def _build_email_message(email_data: Dict[str, Any], sender: str, receiver: List) -> MIMEMultipart:
         """构建邮件消息"""
         msg = MIMEMultipart()
         msg["From"] = sender
-        msg["To"] = email_data.get("receiver", "")
+        msg["To"] = receiver
         msg["Subject"] = email_data.get("subject", "")
         
         # 设置邮件内容

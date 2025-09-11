@@ -20,22 +20,22 @@ class StrategyEngine:
     def __init__(self, config_manager):
         self.config_manager = config_manager  # 配置管理器
         self._event_engine = None  # 事件引擎
-        self._clock_engine = None  # 时钟引擎
+        self.db_manager = None # 数据库管理器
+        self.redis_manager = None # redis管理器
         self.strategies: Dict[str, Any] = {}  # 存储策略实例
-        # self._strategy_check_task_id = None #
+
         self._strategy_config = self.config_manager.get_config("strategy")["strategies"]  # 从配置引擎获取策略配置
+
         # 数据到达事件
         self._event_type = "data_arrived"
 
-        # # 启动时验证策略配置
-        # self._validate_strategy_config()
-
         logger.info("策略引擎初始化完成")
 
-    async def start(self, event_engine, clock_engine) -> None:
+    async def start(self, event_engine, db_manager, redis_manager) -> None:
         """启动策略引擎"""
         self._event_engine = event_engine
-        self._clock_engine = clock_engine
+        self.db_manager = db_manager
+        self.redis_manager = redis_manager
 
         # 实例化策略
         self._instantiate_strategies()
@@ -44,10 +44,10 @@ class StrategyEngine:
         self._initialize_strategies()
 
         # 订阅策略配置变更事件
-        self._event_engine.subscribe("strategy_config_changed", self._strategy_changes)
+        self._event_engine.subscribe("strategy_config_changed", self.handle_config_changes)
 
         # 订阅分钟级实时数据到达事件
-        self._event_engine.subscribe(self._event_type, self._on_minute_tick)
+        self._event_engine.subscribe(self._event_type, self.handle_data_arrived)
 
         logger.info("策略引擎启动成功")
 
@@ -57,8 +57,8 @@ class StrategyEngine:
 
         # 取消事件订阅
         if self._event_engine:
-            self._event_engine.unsubscribe_by_handler("strategy_config_changed", self._strategy_changes)
-            self._event_engine.unsubscribe_by_handler(self._event_type, self._on_minute_tick)
+            self._event_engine.unsubscribe_by_handler("strategy_config_changed", self.handle_config_changes)
+            self._event_engine.unsubscribe_by_handler(self._event_type, self.handle_data_arrived)
 
         # 清除所有策略实例
 
@@ -75,10 +75,11 @@ class StrategyEngine:
             count_strategy = 0
             for strategy_name, strategy_config in self._strategy_config.items():
                 try:
+                    strategy_class_name = strategy_config.get('class')
                     # 获取策略类
-                    strategy_class = self._get_strategy_class(strategy_config.get("class"))
+                    strategy_class = self._get_strategy_class(strategy_name, strategy_class_name)
                     if not strategy_class:
-                        logger.error(f"策略 {strategy_name} 类不存在: {strategy_config.get('class')}")
+                        logger.error(f"策略文件:{strategy_name}.py 不存在;策略类名 {strategy_class_name}")
                         continue
 
                     # 创建策略上下文
@@ -88,12 +89,12 @@ class StrategyEngine:
                     strategy = strategy_class(
                         name=strategy_name,
                         description=strategy_config.get("description", ""),
-                        timeframe=strategy_config.get("timeframe", "1m"),
+                        timeframe=strategy_config.get("timeframe", "2h"),
                         context=context
                     )
 
                     self.strategies[strategy_name] = strategy
-                    logger.info(f"策略 {strategy_name} 实例化成功")
+                    logger.info(f"策略文件:{strategy_name}.py 加载成功;策略类:{strategy_class_name}实例化成功")
                     count_strategy += 1
                 except Exception as e:
                     logger.error(f"策略 {strategy_name} 实例化失败: {e}")
@@ -130,7 +131,7 @@ class StrategyEngine:
 
     # 获取策略类
     @staticmethod
-    def _get_strategy_class(class_name: str):
+    def _get_strategy_class(file_name: str, class_name: str):
         """动态导入策略类"""
         try:
             import importlib.util
@@ -139,12 +140,13 @@ class StrategyEngine:
             from pathlib import Path
             strategies_dir = Path("./strategies")
 
+            # 检查策略目录是否存在
             if not os.path.exists(strategies_dir):
                 logger.error(f"策略目录不存在: {strategies_dir}")
                 return None
 
             # 构建策略文件路径
-            strategy_file = f"{class_name}.py"
+            strategy_file = f"{file_name}.py"
             strategy_path = os.path.join(strategies_dir, strategy_file)
 
             if not os.path.exists(strategy_path):
@@ -188,18 +190,11 @@ class StrategyEngine:
             # 导入策略上下文类
             from yjQuant_v3.core.strategy_template import StrategyContext
 
-            # 获取数据库读取器和缓存管理器
-            db_reader = self._get_db_reader()
-            cache = self._get_cache_manager()
-
             # 创建上下文
             context = StrategyContext(
-                global_config=self.config_manager,
-                event_engine=self._event_engine,
-                db_reader=db_reader,
-                cache=cache,
-                logger=None,  # 使用默认日志器
-                strategy_item=strategy_config
+                db_manager=self.db_manager,
+                redis_manager=self.redis_manager,
+                strategy_config=strategy_config
             )
 
             return context
@@ -207,58 +202,12 @@ class StrategyEngine:
         except Exception as e:
             logger.error(f"创建策略上下文失败: {e}")
 
-            # 返回一个简单的模拟上下文
-            class MockContext:
-                def __init__(self, config_manager, event_engine, strategy_config):
-                    self.global_config = config_manager
-                    self.event_engine = event_engine
-                    self.db_reader = None
-                    self.cache = None
-                    self.logger = logger
-                    self.strategy_item = strategy_config
-                    self.current_unit_epoch = None
-                    self.prefilter_data = {}
-
-            return MockContext(self.config_manager, self._event_engine, strategy_config)
-
-    # 后去数据库读取器
-    def _get_db_reader(self):
-        """获取数据库读取器"""
-        try:
-            # 从配置管理器获取数据库配置
-            db_config = self.config_manager.get_config("data_engine").get("postgresql", {})
-
-            # 这里需要实际的PgManager实例
-            # 在实际使用中，应该通过依赖注入的方式获取
-            # 暂时返回None，实际实现时需要注入PgManager
-            logger.debug("数据库读取器暂时未实现，需要注入PgManager")
-            return None
-        except Exception as e:
-            logger.error(f"获取数据库读取器失败: {e}")
-            return None
-
-    # 获取缓存管理器
-    def _get_cache_manager(self):
-        """获取缓存管理器"""
-        try:
-            # 从配置管理器获取Redis配置
-            redis_config = self.config_manager.get_config("data_engine").get("redis", {})
-
-            # 这里需要实际的RedisCacheManager实例
-            # 在实际使用中，应该通过依赖注入的方式获取
-            # 暂时返回None，实际实现时需要注入RedisCacheManager
-            logger.debug("缓存管理器暂时未实现，需要注入RedisCacheManager")
-            return None
-        except Exception as e:
-            logger.error(f"获取缓存管理器失败: {e}")
-            return None
-
     """-----------------------------事件处理函数---------------------------------------"""
     # <--------------------- 配置变更事件处理 ------------------->
     # 策略变更函数
     # 1、检查strategy_config是否变化，如果变化，则重新加载策略
     # 2、检查是否有新增策略，如果有，则实例化策略
-    async def _strategy_changes(self, event_data: Any = None) -> None:
+    async def handle_config_changes(self, event_data: Any = None) -> None:
         """
         检查策略变更事件
         
@@ -272,7 +221,7 @@ class StrategyEngine:
             logger.info("开始检查策略变更...")
 
             # 获取最新配置
-            new_strategy_config = self.config_manager.get_config("strategy").get("strategies", {})
+            new_strategy_config = event_data.get("strategy_config", {})
 
             # 检查配置是否有变化
             if new_strategy_config == self._strategy_config:
@@ -321,7 +270,7 @@ class StrategyEngine:
             traceback.print_exc()
 
     # <--------------------- 数据到达事件处理 ------------------->
-    async def _on_minute_tick(self, event_data: Any = None) -> None:
+    async def handle_data_arrived(self, event_data: Any = None) -> None:
         """分钟级时钟事件回调：获取实时数据并执行所有策略"""
         try:
             # 实时数据通过event_data获取
@@ -341,23 +290,10 @@ class StrategyEngine:
         except Exception as e:
             logger.error(f"分钟级事件处理失败: {e}")
 
-    # def _collect_monitored_pairs(self) -> list:
-    #     """收集所有策略监控的交易所-交易对列表 [(exchange, symbol), ...]"""
-    #     pairs: list = []
-    #     try:
-    #         for strategy in self.strategies.values():
-    #             if hasattr(strategy, "get_monitored_pairs"):
-    #                 for sym, ex in strategy.get_monitored_pairs():
-    #                     pairs.append((ex, sym))
-    #     except Exception as e:
-    #         logger.error(f"收集监控交易对失败: {e}")
-    #     return list({(ex, sym) for ex, sym in pairs})  # 去重
-
-    # 将实时数据列表转换为Dataframe格式
-
     """-----------------------------------辅助函数-----------------------------------"""
-    # 将实时数据转为Dataframe格式
-    def _convert_realtime_to_dataframe(self, snapshots: list) -> pd.DataFrame:
+    # 将实时数据列表转为Dataframe格式
+    @staticmethod
+    def _convert_realtime_to_dataframe(snapshots: list) -> pd.DataFrame:
         """将实时快照转换为策略输入DataFrame（列包含: exchange, symbol, price, timestamp）"""
         """[("交易所"，“交易对”，(“最新价”，“ms时间戳”))...]"""
         try:
@@ -377,43 +313,6 @@ class StrategyEngine:
         except Exception as e:
             logger.error(f"转换实时快照失败: {e}")
             return pd.DataFrame()
-
-
-    # def _convert_klines_to_dataframe(self, klines_data: list) -> pd.DataFrame:
-    #     """将K线数据转换为DataFrame格式"""
-    #     try:
-    #         if not klines_data:
-    #             return pd.DataFrame()
-    #
-    #         # 解析K线数据格式: [(exchange, symbol, kline), ...]
-    #         # kline格式: [timestamp, open, high, low, close, volume]
-    #         records = []
-    #         for exchange, symbol, kline in klines_data:
-    #             if len(kline) >= 6:
-    #                 records.append({
-    #                     "timestamp": kline[0],
-    #                     "exchange": exchange,
-    #                     "symbol": symbol,
-    #                     "open": kline[1],
-    #                     "high": kline[2],
-    #                     "low": kline[3],
-    #                     "close": kline[4],
-    #                     "volume": kline[5],
-    #                     "price": kline[4]  # 使用close价格作为当前价格
-    #                 })
-    #
-    #         df = pd.DataFrame(records)
-    #
-    #         # 确保时间戳列是数值类型
-    #         if not df.empty and "timestamp" in df.columns:
-    #             df["timestamp"] = pd.to_numeric(df["timestamp"], errors='coerce')
-    #             df = df.dropna(subset=["timestamp"])
-    #
-    #         return df
-    #
-    #     except Exception as e:
-    #         logger.error(f"转换K线数据失败: {e}")
-    #         return pd.DataFrame()
 
     """-----------------------------------执行策略-----------------------------------"""
     # 执行所有策略
@@ -440,16 +339,16 @@ class StrategyEngine:
             strategy_results = []
             # 处理结果
             for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    logger.error(f"策略 {result.strategy_name} 执行失败: {result}")
-                elif result is not None:
-                    # 策略返回了有效结果
-                    strategy_results.append(result)
-                    logger.info(f"策略 {result.strategy_name} 生成信号: {len(result.result_df)} 个")
-                else:
-                    # 策略无信号
-                    # strategy._update_run_stats(success=True)
-                    logger.debug(f"策略 {result.strategy_name} 无信号")
+                try:
+                    if isinstance(result, Exception):
+                        logger.error(f"策略 {result} 执行失败: {result}")
+                    elif result.result_df is not None and not result.result_df.empty:
+                        strategy_results.append(result)
+                        logger.info(f"策略 {result.strategy_name} 生成信号: {len(result.result_df)} 个")
+                    else:
+                        logger.debug(f"策略 {result.strategy_name} 无信号")
+                except Exception as e:
+                    logger.info(e)
 
             logger.info(f"策略执行完成，共生成 {len(strategy_results)} 个策略结果")
             return strategy_results
@@ -459,11 +358,12 @@ class StrategyEngine:
             return []
 
     # 执行单个策略
-    async def _execute_single_strategy(self, strategy, df: pd.DataFrame):
+    @staticmethod
+    async def _execute_single_strategy(strategy, df: pd.DataFrame):
         """执行单个策略"""
         try:
             # 调用策略的on_realtime方法
-            result = strategy.on_realtime(df)
+            result = await strategy.on_realtime(df)
             return result
 
         except Exception as e:
@@ -486,11 +386,11 @@ class StrategyEngine:
                     # 将dataframe格式的数据，每行转为一个字典，所有字典组成列表
                     signals = result.result_df.to_dict("records") # 'records'
                     for signal in signals:
-                        signal['strategy_name'] = result.strategy_name
-                        signal['timeframe'] = result.timeframe
+                        signal['strategy_name'] = result.strategy_name # 策略名
+                        signal['timeframe'] = result.timeframe # 策略的时间帧，1m\1h\1d
 
                     # 发送邮件事件
-                    await self._publish_email_notification(signals)
+                    await self._publish_email_notification(signals,result.strategy_name)
                 else:
                     logger.info("没有有效的交易信号")
 
@@ -501,19 +401,21 @@ class StrategyEngine:
 
     """---------------------------------发布邮件事件------------------------------------"""
     # 发布邮件事件
-    async def _publish_email_notification(self, signals: list) -> None:
+    async def _publish_email_notification(self, signals: list, strategy_name:str) -> None:
         """发布邮件通知事件"""
         try:
             if not self._event_engine:
                 logger.error("事件引擎未初始化，无法发布事件")
                 return
+            if not signals:
+                logger.info("没有交易信号")
+                return
 
             # 构建邮件内容
-            subject = f"交易信号提醒 - {len(signals)} 个信号"
+            subject = f"{strategy_name}"
             content = self._build_email_content(signals)
 
             event_data = {
-                "receiver": "13086397065@163.com",
                 "subject": subject,
                 "content": content,
                 "content_type": "text"
@@ -531,9 +433,6 @@ class StrategyEngine:
     def _build_email_content(signals: list) -> str:
         """构建邮件内容"""
         try:
-            if not signals:
-                return "没有交易信号"
-
             content_lines = [
                 f"策略检测到 {len(signals)} 个交易信号：",
                 "",
@@ -544,11 +443,9 @@ class StrategyEngine:
                 exchange = signal.get("exchange", "Unknown")
                 symbol = signal.get("symbol", "Unknown")
                 price = signal.get("price", "Unknown")
-                strategy_name = signal.get("strategy_name", "Unknown")
 
                 content_lines.append(
                     f"{i}. {exchange}:{symbol} - 价格: {price} "
-                    f"(策略: {strategy_name})"
                 )
 
             return "\n".join(content_lines)

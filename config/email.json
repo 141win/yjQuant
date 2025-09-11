@@ -1,10 +1,10 @@
 {
     "smtp_server": "smtp.qq.com",
     "smtp_port": 465,
-    "username": "1410959463@qq.com",
-    "password": "pialgdtyxptuiiad",
+    "username": "you@qq.com",
+    "password": "password",
     "use_tls": false,
-    "from_email": "1410959463@qq.com",
-    "to_emails": ["13086397065@163.com"]
+    "from_email": "you@qq.com",
+    "to_email": ["me.com"]
 }
 

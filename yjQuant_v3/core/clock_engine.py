@@ -153,14 +153,6 @@ class ClockEngine:
         logger.info(f"定时任务注册成功: {name} ({task_id}), 间隔: {interval}秒")
         return task_id
     
-    def register_hourly_task(self, name: str, event_type: str, event_data: Any = None) -> str:
-        """注册每小时执行的任务 - 在每小时0分0秒执行"""
-        return self.register_task(name, event_type, 3600, event_data)
-    
-    def register_daily_task(self, name: str, event_type: str, event_data: Any = None) -> str:
-        """注册每天执行的任务 - 在每天0时0分0秒执行"""
-        return self.register_task(name, event_type, 86400, event_data)
-    
     def unregister_task(self, task_id: str) -> bool:
         """取消定时任务"""
         if task_id not in self._tasks:
@@ -237,38 +229,38 @@ class ClockEngine:
             task.last_error = str(e)
             logger.error(f"定时事件发布失败: {task.name}, 错误: {e}")
     
-    def get_task_count(self) -> int:
-        """获取任务总数"""
-        return len(self._tasks)
-    
-    def get_enabled_task_count(self) -> int:
-        """获取启用的任务数量"""
-        return sum(1 for task in self._tasks.values() if task.enabled)
-    
-    def get_task_info(self, task_id: str) -> Optional[ClockTask]:
-        """获取任务信息"""
-        return self._tasks.get(task_id)
-    
-    def enable_task(self, task_id: str) -> bool:
-        """启用任务"""
-        if task_id not in self._tasks:
-            return False
-        
-        task = self._tasks[task_id]
-        task.enabled = True
-        logger.info(f"任务已启用: {task_id}")
-        return True
-    
-    def disable_task(self, task_id: str) -> bool:
-        """禁用任务"""
-        if task_id not in self._tasks:
-            return False
-        
-        task = self._tasks[task_id]
-        task.enabled = False
-        logger.info(f"任务已禁用: {task_id}")
-        return True
-    
-    def is_active(self) -> bool:
-        """检查时钟引擎是否处于活动状态"""
-        return self._active
+    # def get_task_count(self) -> int:
+    #     """获取任务总数"""
+    #     return len(self._tasks)
+    #
+    # def get_enabled_task_count(self) -> int:
+    #     """获取启用的任务数量"""
+    #     return sum(1 for task in self._tasks.values() if task.enabled)
+    #
+    # def get_task_info(self, task_id: str) -> Optional[ClockTask]:
+    #     """获取任务信息"""
+    #     return self._tasks.get(task_id)
+    #
+    # def enable_task(self, task_id: str) -> bool:
+    #     """启用任务"""
+    #     if task_id not in self._tasks:
+    #         return False
+    #
+    #     task = self._tasks[task_id]
+    #     task.enabled = True
+    #     logger.info(f"任务已启用: {task_id}")
+    #     return True
+    #
+    # def disable_task(self, task_id: str) -> bool:
+    #     """禁用任务"""
+    #     if task_id not in self._tasks:
+    #         return False
+    #
+    #     task = self._tasks[task_id]
+    #     task.enabled = False
+    #     logger.info(f"任务已禁用: {task_id}")
+    #     return True
+    #
+    # def is_active(self) -> bool:
+    #     """检查时钟引擎是否处于活动状态"""
+    #     return self._active

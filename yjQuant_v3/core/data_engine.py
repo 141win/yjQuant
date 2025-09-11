@@ -68,9 +68,9 @@ class DataEngine:
         await self._initialize_managers()
         
         # 订阅事件
-        self._event_engine.subscribe("ticker_data_request", self._handle_ticker_data_request)
-        self._event_engine.subscribe("klines_data_request", self._handle_klines_data_request)
-        self._event_engine.subscribe("data_engine_config_changed", self._handle_config_change)
+        self._event_engine.subscribe("ticker_data_request", self.handle_ticker_data_request)
+        self._event_engine.subscribe("klines_data_request", self.handle_klines_data_request)
+        self._event_engine.subscribe("data_engine_config_changed", self.handle_config_change)
 
         for name,request_config in self.data_request_config.items(): # 注册多个定时请求任务
             # 向时钟引擎注册数据请求任务
@@ -97,9 +97,9 @@ class DataEngine:
         
         # 取消事件订阅
         if self._event_engine:
-            self._event_engine.unsubscribe_by_handler("ticker_data_request", self._handle_ticker_data_request)
-            self._event_engine.unsubscribe_by_handler("klines_data_request", self._handle_klines_data_request)
-            self._event_engine.unsubscribe_by_handler("data_engine_config_changed", self._handle_config_change)
+            self._event_engine.unsubscribe_by_handler("ticker_data_request", self.handle_ticker_data_request)
+            self._event_engine.unsubscribe_by_handler("klines_data_request", self.handle_klines_data_request)
+            self._event_engine.unsubscribe_by_handler("data_engine_config_changed", self.handle_config_change)
         
         # 停止子管理器
         await self._stop_managers()
@@ -168,7 +168,7 @@ class DataEngine:
     # 2、调用redis管理器方法batch_store_klines()方法，该方法自动将传入数据[(exchange_id, symbol, kline或None), ...]批量插入redis
     # 3、发布数据到达事件——该事件订阅者：策略引擎，会执行所有策略
     # 对外开放：请求数据事件处理器（注册用）
-    async def _handle_klines_data_request(self, event_data: Any = None) -> None:
+    async def handle_klines_data_request(self, event_data: Any = None) -> None:
         """
         处理定时数据请求事件
         
@@ -192,25 +192,6 @@ class DataEngine:
                 return
             
             logger.info(f"成功获取 {len(klines_data)} 条K线数据")
-            
-            # # 2. 将数据存储到Redis
-            # if not self._redis_manager:
-            #     logger.error("Redis管理器未初始化")
-            #     return
-            #
-            # success = await self._redis_manager.batch_store_klines(
-            #     klines_data,
-            #     # expire_minutes=expire_minutes redis内部有配置，只提供数据，redis读取配置计算过期时间
-            # )
-            
-            # if success:
-            #     logger.info("K线数据成功存储到Redis")
-            #
-            #     # 3. 发布数据到达事件
-            #     await self._publish_data_arrived_event(klines_data)
-            #
-            # else:
-            #     logger.error("K线数据存储到Redis失败")
 
             # 3. 将数据存储到pg数据库
             if not self._db_manager:
@@ -232,7 +213,7 @@ class DataEngine:
             import traceback
             traceback.print_exc()
 
-    async def _handle_ticker_data_request(self, event_data: Any = None) -> None:
+    async def handle_ticker_data_request(self, event_data: Any = None) -> None:
         """
         处理ticker数据请求事件
         请求ticker数据，发布数据到达事件
@@ -260,9 +241,10 @@ class DataEngine:
             logger.error(f"处理ticker数据请求事件失败: {e}")
             import traceback
             traceback.print_exc()
+
     # 对外开放：处理配置变更事件
     # 1、从事件数据中读取最新配置，并调用所有子组件的配置修改方法，将新配置传入，不关心子组件内部更新配置细节
-    async def _handle_config_change(self, event_data: Any = None) -> None:
+    async def handle_config_change(self, event_data: Any = None) -> None:
         """
         处理数据引擎配置变更事件
         
@@ -334,6 +316,7 @@ class DataEngine:
             import traceback
             traceback.print_exc()
 
+    """--------------------------------发布数据到达事件-------------------------------"""
     # 内部方法：发布数据到达事件
     # <---------------------发布事件函数 ----------->
     # 发布数据到达事件
@@ -372,15 +355,3 @@ class DataEngine:
             logger.error(f"发布数据到达事件失败: {e}")
             import traceback
             traceback.print_exc()
-
-    """------------------------辅助函数-------------------------------"""
-    # 内部方法：ms单位时间戳转为中国时间，用于插入数据库前的数据清理
-    # @staticmethod
-    # def _ms_to_china_datetime(ms: int) -> datetime:
-    #     """
-    #     Convert epoch milliseconds to Asia/Shanghai timezone-aware datetime.
-    #     """
-    #     # China Standard Time is UTC+8, no DST
-    #     utc_dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
-    #     china_dt = utc_dt.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
-    #     return china_dt

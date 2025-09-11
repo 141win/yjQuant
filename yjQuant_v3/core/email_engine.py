@@ -122,10 +122,12 @@ class EmailEngine:
                 return False
             
             # 构建邮件
-            msg = self._build_email_message(email_data, sender, receiver)
+            # 统一收件人类型为 List[str]
+            receiver_list = receiver if isinstance(receiver, list) else [receiver]
+            msg = self._build_email_message(email_data, sender, receiver_list)
             
             # 发送邮件
-            success = self._send_via_smtp(smtp_server, smtp_port, username, password, msg)
+            success = self._send_via_smtp(smtp_server, smtp_port, username, password, msg, receiver_list)
             return success
             
         except Exception as e:
@@ -153,11 +155,12 @@ class EmailEngine:
             return None
 
     @staticmethod
-    def _build_email_message(email_data: Dict[str, Any], sender: str, receiver: List) -> MIMEMultipart:
+    def _build_email_message(email_data: Dict[str, Any], sender: str, receiver: List[str]) -> MIMEMultipart:
         """构建邮件消息"""
         msg = MIMEMultipart()
         msg["From"] = sender
-        msg["To"] = receiver
+        # 多个收件人以逗号拼接到头部
+        msg["To"] = ", ".join(receiver)
         msg["Subject"] = email_data.get("subject", "")
         
         # 设置邮件内容
@@ -173,24 +176,24 @@ class EmailEngine:
     
     @staticmethod
     def _send_via_smtp(smtp_server: str, smtp_port: int,
-                       username: str, password: str, msg: MIMEMultipart) -> bool:
+                       username: str, password: str, msg: MIMEMultipart, to_addrs: List[str]) -> bool:
         """通过SMTP发送邮件"""
         try:
             if smtp_port == 465:
                 # SSL连接
                 with smtplib.SMTP_SSL(smtp_server, smtp_port) as smtp:
                     smtp.login(username, password)
-                    smtp.send_message(msg)
+                    smtp.send_message(msg, to_addrs=to_addrs)
                     # 强制关闭连接
                     smtp.quit()
             else:
                 # 非SSL连接
                 with smtplib.SMTP(smtp_server, smtp_port) as smtp:
                     smtp.starttls()  # 启用TLS
-                smtp.login(username, password)
-                smtp.send_message(msg)
-                # 强制关闭连接
-                smtp.quit()
+                    smtp.login(username, password)
+                    smtp.send_message(msg, to_addrs=to_addrs)
+                    # 强制关闭连接
+                    smtp.quit()
             
             logger.info(f"邮件发送成功: {msg['Subject']}")
             return True

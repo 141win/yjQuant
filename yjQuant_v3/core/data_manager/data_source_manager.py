@@ -163,7 +163,7 @@ class DataSourceManager:
     async def _fetch_all_tickers(self, exchange_id: Any, symbols: List[str]):
         """
         输入：交易所ID、符号列表
-        输出：[(symbol, ticker或None), ...]
+        输出：{}
         主要逻辑：创建并预加载市场，批量并发抓取ticker
         """
         exchange = self._create_exchange(exchange_id)
@@ -191,7 +191,7 @@ class DataSourceManager:
             return results
         except Exception as e:
             logger.error(f"获取 {exchange_id} ticker数据失败: {e}")
-            return [(symbol, None) for symbol in symbols]
+            return {}
         finally:
             await exchange.close()
 

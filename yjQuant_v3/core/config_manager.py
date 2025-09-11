@@ -64,7 +64,7 @@ class ConfigManager:
         self.config_check_interval = self.configs["system"]["config_check_interval"]
 
         # 向事件引擎订阅配置检查事件
-        self._event_engine.subscribe("config_check", self._check_config_changes)
+        self._event_engine.subscribe("config_check", self.check_config_changes)
 
         # 向时钟引擎注册配置检查任务
         self._config_check_task_id = self._clock_engine.register_task(
@@ -90,7 +90,7 @@ class ConfigManager:
 
         # 取消事件订阅
         if self._event_engine:
-            self._event_engine.unsubscribe_by_handler("config_check", self._check_config_changes)
+            self._event_engine.unsubscribe_by_handler("config_check", self.check_config_changes)
 
         # 清理组件引用
         self._event_engine = None
@@ -98,88 +98,8 @@ class ConfigManager:
 
         logger.info("配置管理器已停止")
 
-    # 内部方法：从 system.json 加载配置文件列表
-    def _load_config_files_list(self) -> Dict[str, str]:
-        """从 system.json 文件加载配置文件列表"""
-        system_config_file = self.config_dir / "system.json"
-        
-        if not system_config_file.exists():
-            logger.warning("system.json 文件不存在，使用默认配置文件列表")
-            return {
-                "system": "system.json",
-                "email": "email.json", 
-                "strategy": "strategy.json",
-                "data_engine": "data_engine.json"
-            }
-        
-        try:
-            with open(system_config_file, 'r', encoding='utf-8') as f:
-                system_config = json.load(f)
-            
-            config_files = system_config.get("config_files", {})
-            if not config_files:
-                logger.warning("system.json 中未找到 config_files 配置，使用默认配置文件列表")
-                return {
-                    "system": "system.json",
-                    "email": "email.json",
-                    "strategy": "strategy.json", 
-                    "data_engine": "data_engine.json"
-                }
-            
-            logger.info(f"从 system.json 加载配置文件列表: {list(config_files.keys())}")
-            return config_files
-            
-        except Exception as e:
-            logger.error(f"加载 system.json 失败: {e}，使用默认配置文件列表")
-            return {
-                "system": "system.json",
-                "email": "email.json",
-                "strategy": "strategy.json",
-                "data_engine": "data_engine.json"
-            }
-
-    # 内部方法：加载所有配置文件
-    async def _load_all_configs(self) -> None:
-        """加载所有配置文件"""
-        logger.info("开始加载所有配置文件")
-
-        # 从 system.json 获取配置文件列表
-        config_files = self._load_config_files_list()
-
-        for config_name, filename in config_files.items():
-            config_file = self.config_dir / filename
-
-            if config_file.exists():
-                try:
-                    # 读取配置文件
-                    with open(config_file, 'r', encoding='utf-8') as f:
-                        config_data = json.load(f)
-
-                    # 保存配置和文件路径
-                    self.configs[config_name] = config_data
-                    self.config_files[config_name] = config_file
-
-                    # 计算文件哈希
-                    file_hash = self.calculate_file_hash(config_file) # 用的二进制模式读取，此前用的文件读写
-                    self.config_hashes[config_name] = file_hash
-
-                    logger.info(f"配置文件加载成功: {config_name}")
-
-                except Exception as e:
-                    logger.error(f"加载配置文件失败: {config_name}, 错误: {e}")
-                    # 使用默认配置
-                    # self.configs[config_name] = self._get_default_config(config_name)
-                    # self.config_files[config_name] = config_file
-            else:
-                logger.warning(f"配置文件不存在: {config_file}")
-                # 使用默认配置
-                # self.configs[config_name] = self._get_default_config(config_name)
-                # self.config_files[config_name] = config_file
-
-        logger.info(f"配置文件加载完成，共加载 {len(self.configs)} 个配置")
-
     # 对外开放（注册用）：检查配置变更
-    async def _check_config_changes(self, event_data=None) -> None:
+    async def check_config_changes(self, event_data=None) -> None:
         """检查配置变更 - 定时任务回调"""
         """
         通过计算文件哈希值判断文件是否修改
@@ -193,7 +113,7 @@ class ConfigManager:
 
             try:
                 # 计算当前文件哈希
-                current_hash = self.calculate_file_hash(config_file)
+                current_hash = self._calculate_file_hash(config_file)
                 old_hash = self.config_hashes.get(config_name)
 
                 # 检查是否有变更
@@ -201,7 +121,7 @@ class ConfigManager:
                     logger.info(f"检测到配置文件变更: {config_name}")
 
                     # 重新加载配置
-                    if self._reload_config(config_name,current_hash):
+                    if self._reload_config(config_name, current_hash):
                         logger.info(f"配置文件变更处理成功: {config_name}")
                     else:
                         logger.error(f"配置文件变更处理失败: {config_name}")
@@ -210,7 +130,7 @@ class ConfigManager:
                 logger.error(f"检查配置文件变更失败: {config_name}, 错误: {e}")
 
     # 内部方法：重新加载配置文件
-    def _reload_config(self, config_name: str,new_hash:str) -> bool:
+    def _reload_config(self, config_name: str, new_hash: str) -> bool:
         """重新加载指定配置文件"""
         """
         调用该方法前，理应已经对文件存在性、是否修改进行判断后再决定调用
@@ -245,9 +165,89 @@ class ConfigManager:
             logger.error(f"重新加载配置文件失败: {config_name}, 错误: {e}")
             return False
 
+    # 内部方法：加载所有配置文件
+    async def _load_all_configs(self) -> None:
+        """加载所有配置文件"""
+        logger.info("开始加载所有配置文件")
+
+        # 从 system.json 获取配置文件列表
+        config_files = self._load_config_files_list()
+
+        for config_name, filename in config_files.items():
+            config_file = self.config_dir / filename
+
+            if config_file.exists():
+                try:
+                    # 读取配置文件
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config_data = json.load(f)
+
+                    # 保存配置和文件路径
+                    self.configs[config_name] = config_data
+                    self.config_files[config_name] = config_file
+
+                    # 计算文件哈希
+                    file_hash = self._calculate_file_hash(config_file) # 用的二进制模式读取，此前用的文件读写
+                    self.config_hashes[config_name] = file_hash
+
+                    logger.info(f"配置文件加载成功: {config_name}")
+
+                except Exception as e:
+                    logger.error(f"加载配置文件失败: {config_name}, 错误: {e}")
+                    # 使用默认配置
+                    # self.configs[config_name] = self._get_default_config(config_name)
+                    # self.config_files[config_name] = config_file
+            else:
+                logger.warning(f"配置文件不存在: {config_file}")
+                # 使用默认配置
+                # self.configs[config_name] = self._get_default_config(config_name)
+                # self.config_files[config_name] = config_file
+
+        logger.info(f"配置文件加载完成，共加载 {len(self.configs)} 个配置")
+
+    # 内部方法：从 system.json 加载配置文件列表
+    def _load_config_files_list(self) -> Dict[str, str]:
+        """从 system.json 文件加载配置文件列表"""
+        system_config_file = self.config_dir / "system.json"
+
+        if not system_config_file.exists():
+            logger.warning("system.json 文件不存在，使用默认配置文件列表")
+            return {
+                "system": "system.json",
+                "email": "email.json",
+                "strategy": "strategy.json",
+                "data_engine": "data_engine.json"
+            }
+
+        try:
+            with open(system_config_file, 'r', encoding='utf-8') as f:
+                system_config = json.load(f)
+
+            config_files = system_config.get("config_files", {})
+            if not config_files:
+                logger.warning("system.json 中未找到 config_files 配置，使用默认配置文件列表")
+                return {
+                    "system": "system.json",
+                    "email": "email.json",
+                    "strategy": "strategy.json",
+                    "data_engine": "data_engine.json"
+                }
+
+            logger.info(f"从 system.json 加载配置文件列表: {list(config_files.keys())}")
+            return config_files
+
+        except Exception as e:
+            logger.error(f"加载 system.json 失败: {e}，使用默认配置文件列表")
+            return {
+                "system": "system.json",
+                "email": "email.json",
+                "strategy": "strategy.json",
+                "data_engine": "data_engine.json"
+            }
+
     # 内部方法：计算文件哈希值，用于判断文件是否修改
     @staticmethod
-    def calculate_file_hash(file_path: Path) -> str:
+    def _calculate_file_hash(file_path: Path) -> str:
         """计算文件哈希值"""
         try:
             with open(file_path, 'rb') as f:
